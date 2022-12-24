@@ -61,9 +61,22 @@ logger.setLevel(logging.INFO)
 fh = logging.FileHandler('myLog.log')
 logger.addHandler(fh)
 
+# arguments
+import argparse
+parser = argparse.ArgumentParser(description='MIRNet + SRGAN training')
+parser.add_argument('--model_name', default='srgan_best.pth',
+    type=str, help='Model name')
+parser.add_argument('--tags', default='srgan', nargs='+',
+    type=str, help='Experiment Name')
+
+args = parser.parse_args()
+model_name = args.model_name
+print('model_name:', model_name)
+
 import neptune.new as neptune
 run = neptune.init(
     project="thuy4tbn99/MIRNet",
+    tags=args.tags,
     api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiJmMDZlN2UwYS1lODc1LTRlMTctYjQzNS00MmEwOTJiZWU5YzIifQ==",
 )
 
@@ -91,9 +104,12 @@ if __name__=='__main__':
         netD = nn.DataParallel(netD, device_ids = device_ids)
 
     ######### Loss ###########
-    # criterion = CharbonnierLoss().cuda()
+    mirnetLoss = CharbonnierLoss().cuda()
     generatorLoss = GeneratorLoss().cuda()
-    adversarialLoss = torch.nn.L1Loss().cuda()
+    # adversarialLoss = torch.nn.L1Loss().cuda()
+    adversarialLoss = torch.nn.MSELoss().cuda()
+    criterion_content = torch.nn.L1Loss().cuda()
+    
 
     ######### DataLoaders ###########
     img_options_train = {'patch_size':opt.TRAINING.TRAIN_PS}
@@ -114,8 +130,8 @@ if __name__=='__main__':
     best_epoch = 0
     best_iter = 0
 
-    eval_now = len(train_loader)//1000 - 1
-    # eval_now=10
+    eval_now = len(train_loader)//3 - 1
+    # eval_now=5
     print(f"\nEvaluation after every {eval_now} Iterations !!!\n")
 
     for epoch in range(start_epoch, opt.OPTIM.NUM_EPOCHS): # run 1 time
@@ -135,40 +151,42 @@ if __name__=='__main__':
             real_img = data[0].cuda()     # clean
             input_ = data[1].cuda()     # noisy
 
-            
-        
+            valid = Variable(Tensor(np.ones((batch_size, 1))), requires_grad=False)
+            fake = Variable(Tensor(np.zeros((batch_size, 1))), requires_grad=False)
+
             ############################
             # (1) Update G network: minimize 1-D(G(z)) + Perception Loss + Image Loss + TV Loss
             ###########################
-            netG.zero_grad()
-            fake_img = netG(input_)
-            fake_out = netD(fake_img).mean()
-            real_out = netD(fake_img).mean()
+            optimizerG.zero_grad()
+            gen_img = netG(input_)
 
-            print('fake_img', fake_img.shape)
-            print('netD out', netD(fake_img).shape, netD(fake_img))
-            print('fake_out', fake_out.shape)
-            print('real_out', real_out.shape)
+            
+            # print('fake_img', fake_img.shape)
+            # print('netD out', fake_out.shape, netD(fake_img))
+            loss_GAN = adversarialLoss(torch.unsqueeze(netD(gen_img), 1), valid)
+            loss_content = generatorLoss(gen_img, real_img)
+            loss_img = mirnetLoss(gen_img, real_img)
 
-            g_loss = generatorLoss(fake_out, fake_img, real_img)
+            g_loss = ((loss_GAN + 1e-3*loss_content) + loss_img)/2
             g_loss.backward()
             optimizerG.step()
 
             ############################
             # (2) Update D network: maximize D(x)-1-D(G(z))
             ###########################
-            netD.zero_grad()
-            tmp = netD(real_img)
-            valid = Variable(Tensor(np.ones((input_.size(0), tmp.shape))), requires_grad=False)
-            fake = Variable(Tensor(np.zeros((input_.size(0), tmp.shape))), requires_grad=False)
-            real_loss = adversarialLoss(netD(real_img), valid)
-            fake_loss = adversarialLoss(netD(fake_img), fake)
+            optimizerD.zero_grad()
+            real_loss = adversarialLoss(torch.unsqueeze(netD(real_img), 1), valid) # unsqueeze to same shape with valid
+            fake_loss = adversarialLoss(torch.unsqueeze(netD(gen_img).detach(), 1), fake) # detach() make fake_loss not contribute to gradient
             d_loss = (real_loss + fake_loss)/2
-            d_loss.backward(retain_graph=True)
+            # print('real_loss', real_loss)
+            # print('fake_loss', fake_loss)
+            # print('d_loss', type(d_loss), d_loss)
+            d_loss.backward()
             optimizerD.step()
+            # optimizerD.zero_grad()
 
 
-            if i%100==0:
+            if i%1000==0:
                 run['train_Gloss'].log(g_loss.item())
                 run['train_Dloss'].log(d_loss.item())
 
@@ -176,8 +194,8 @@ if __name__=='__main__':
             # loss for current batch before optimization 
             running_results['g_loss'] += g_loss.item() * batch_size
             running_results['d_loss'] += d_loss.item() * batch_size
-            running_results['d_score'] += real_out.item() * batch_size
-            running_results['g_score'] += fake_out.item() * batch_size
+            # running_results['d_score'] += real_out.item() * batch_size
+            # running_results['g_score'] += fake_out.item() * batch_size
 
             train_bar.set_description(desc='[%d/%d] Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f' % (
                 epoch, NUM_EPOCHS, running_results['d_loss'] / running_results['batch_sizes'],
@@ -193,6 +211,7 @@ if __name__=='__main__':
                     psnr_val_rgb = []
                     val_bar = tqdm(val_loader)
                     for ii, data_val in enumerate(val_bar, 0):
+                        
                         target = data_val[0].cuda()
                         input_ = data_val[1].cuda()
                         filenames = data_val[2]
@@ -216,11 +235,11 @@ if __name__=='__main__':
                         torch.save({'epoch': epoch, 
                                     'state_dict': netG.state_dict(),
                                     'optimizer' : optimizerG.state_dict()
-                                    }, os.path.join(model_dir,"ver2_netG_best.pth"))
+                                    }, os.path.join(model_dir, f"{args.model_name}_netG_best.pth"))
                         torch.save({'epoch': epoch, 
                             'state_dict': netD.state_dict(),
                             'optimizer' : optimizerD.state_dict()
-                            }, os.path.join(model_dir,"ver2_netD_best.pth")) 
+                            }, os.path.join(model_dir, f"{args.model_name}_netD_best.pth")) 
                         
 
                     print("[Ep %d it %d\t PSNR SIDD: %.4f\t] ----  [best_Ep_SIDD %d best_it_SIDD %d Best_PSNR_SIDD %.4f] " % (epoch, i, psnr_val_rgb,best_epoch,best_iter,best_psnr))
@@ -238,10 +257,10 @@ if __name__=='__main__':
         torch.save({'epoch': epoch, 
                     'state_dict': netG.state_dict(),
                     'optimizer' : optimizerG.state_dict()
-                    }, os.path.join(model_dir,"ver2_netG_latest.pth"))   
+                    }, os.path.join(model_dir, f"{args.model_name}_netG_latest.pth"))   
         
         torch.save({'epoch': epoch, 
                     'state_dict': netD.state_dict(),
                     'optimizer' : optimizerD.state_dict()
-                    }, os.path.join(model_dir,"ver2_netD_latest.pth"))   
+                    }, os.path.join(model_dir, f"{args.model_name}_netD_latest.pth"))   
 

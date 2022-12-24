@@ -1,7 +1,7 @@
 ###############
 
-GPU: [3, 4, 5, 6, 7]
-# GPU: [1, 2]
+#GPU: [3, 4, 5, 6, 7]
+GPU: [0]
 
 VERBOSE: True
 
@@ -12,7 +12,7 @@ MODEL:
 # Optimization arguments.
 OPTIM:
   BATCH_SIZE: 8
-  NUM_EPOCHS: 2
+  NUM_EPOCHS: 10
   LR_INITIAL: 2e-4
   #NEPOCH_DECAY: [40]
   #BETA1: 0.9
