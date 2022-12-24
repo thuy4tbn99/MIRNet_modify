@@ -1,0 +1,11 @@
+.ipynb_checkpoints/
+.neptune
+*.pyc
+.*.py
+*~
+
+SIDD_patches
+checkpoints
+
+*.png
+*.zip
