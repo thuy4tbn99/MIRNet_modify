@@ -1,6 +1,22 @@
+
+import argparse
+# arguments
+parser = argparse.ArgumentParser(description='MIRNet training')
+parser.add_argument('--model_name', default='model_best.pth',
+    type=str, help='Model name')
+parser.add_argument('--file_yml', default='training.yml',
+    type=str, help='Path yml file')
+parser.add_argument('--tags', default='mirnet', nargs='+',
+    type=str, help='Experiment Name')
+
+args = parser.parse_args()
+model_name = args.model_name
+print('model_name:', model_name)
+
+
 import os
 from config import Config 
-opt = Config('training.yml')
+opt = Config(args.file_yml)
 
 gpus = ','.join([str(i) for i in opt.GPU])
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -27,7 +43,6 @@ from losses import CharbonnierLoss
 
 from tqdm import tqdm 
 from warmup_scheduler import GradualWarmupScheduler
-import argparse
 
 import torchvision.transforms as transforms
 from transform_func import AddGaussianNoise, AddSnow, BrightnessTransform, MotionBlur
@@ -37,16 +52,7 @@ brightness = BrightnessTransform(1.6)
 motionBlur = MotionBlur()
 
 
-# arguments
-parser = argparse.ArgumentParser(description='MIRNet training')
-parser.add_argument('--model_name', default='model_best.pth',
-    type=str, help='Model name')
-parser.add_argument('--tags', default='mirnet', nargs='+',
-    type=str, help='Experiment Name')
 
-args = parser.parse_args()
-model_name = args.model_name
-print('model_name:', model_name)
 
 ######### Set Seeds ###########
 random.seed(1234)
@@ -77,7 +83,7 @@ fh = logging.FileHandler('myLog.log')
 logger.addHandler(fh)
 
 import neptune.new as neptune
-run = neptune.init(
+run = neptune.init_run(
     project="thuy4tbn99/MIRNet",
     tags=args.tags,
     api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiJmMDZlN2UwYS1lODc1LTRlMTctYjQzNS00MmEwOTJiZWU5YzIifQ==",
@@ -135,7 +141,8 @@ transformList = []
 transformList.append(brightness)
 transformSequence=transforms.Compose(transformList)
 
-train_dataset = get_training_data(train_dir, img_options_train, transformSequence)
+# train_dataset = get_training_data(train_dir, img_options_train, transformSequence) # have transform
+train_dataset = get_training_data(train_dir, img_options_train, None) # No transform
 train_loader = DataLoader(dataset=train_dataset, batch_size=opt.OPTIM.BATCH_SIZE, shuffle=True, num_workers=16, drop_last=False)
 
 val_dataset = get_validation_data(val_dir)
@@ -149,9 +156,12 @@ best_psnr = 0
 best_epoch = 0
 best_iter = 0
 
-# eval_now = len(train_loader)//100 - 1
-eval_now=1000
-neplog_iter = 100
+if len(train_loader) > 8000:
+    eval_now=opt.TRAINING.VAL_AFTER_EVERY
+else:
+    eval_now = len(train_loader)
+
+neplog_iter = 100 # not use
 print(f"\nEvaluation after every {eval_now} Iterations !!!\n")
 
 for epoch in range(start_epoch, opt.OPTIM.NUM_EPOCHS + 1):
